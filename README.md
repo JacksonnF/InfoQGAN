@@ -4,7 +4,7 @@ Our main task was to demonstrate a working InfoQGAN. To do this we started by cr
 
 ## Experiments Folder
 
-The `experiments` folder contains Jupyter notebooks that document the development process of the InfoQGAN. These notebooks provide insights into design decisions and parameter tunings. Whereas the Python files were derived from these notebooks, ensuring a tested and validated implementation.
+The `experiments` folder contains Jupyter notebooks that document the development process of the InfoQGAN. These notebooks provide insights into design decisions and parameter tunings. Whereas the Python files were derived from these notebooks, ensuring a tested and validated implementation. 
 
 ## Installation
 
