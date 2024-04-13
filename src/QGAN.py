@@ -1,20 +1,18 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import pennylane as qml
 from pennylane import numpy as np
 
 
-
-
 class Discriminator(nn.Module):
-    def __init__(self, input_size, hid_size) -> None:
+    def __init__(self, input_size, hid_size, use_financial=False) -> None:
         """
         Args:
         - input_size (int): The size of the input data.
         - hid_size (int): The size of the hidden layers.
         """
         super().__init__()
+        self.use_financial = use_financial
         self.layers = nn.Sequential(
             nn.Linear(input_size, hid_size),
             nn.ReLU(),
@@ -52,7 +50,10 @@ class Discriminator(nn.Module):
 
         """
         batch_size, _ = x_data.shape[0], x_data.shape[1]
-        x_rand = 2*torch.rand((batch_size, input_size))-1
+        if self.use_financial:
+            x_rand = torch.rand((batch_size, input_size))
+        else:
+            x_rand = 2*torch.rand((batch_size, input_size))-1
 
         self.zero_grad()
 
@@ -74,9 +75,7 @@ class Discriminator(nn.Module):
     
 number_of_qubits = 5
 number_of_reps = 5
-
 dev = qml.device('default.qubit', wires=number_of_qubits)
-
 @qml.qnode(dev)
 def quantum_generator(inputs, params):
     """
@@ -106,10 +105,45 @@ def quantum_generator(inputs, params):
 
 weights = {"params": 3 * number_of_qubits * number_of_reps}
 
+number_of_qubits_financial = 4
+number_of_reps_financial = 5
+
+dev_fin = qml.device('default.qubit', wires=number_of_qubits_financial)
+@qml.qnode(dev_fin)
+def quantum_generator_financial(inputs, params):
+    """
+    Defines the quantum generator circuit. Embedding and Ansatz layers were based on the paper we followed.
+
+    Args:
+    - inputs (torch.Tensor): The input data.
+    - params (torch.Tensor): The parameters of the circuit.
+
+    Returns:
+    - tuple: The probabilities of the qubits.
+    """
+    qml.AngleEmbedding(np.pi*(inputs-0.5)/2, rotation="Y", wires=range(number_of_qubits))
+    num_params = 0
+    for layer in range(number_of_reps_financial):
+        #initial Ry gates.
+        for i in range(number_of_qubits_financial):
+            qml.RY(params[num_params], wires=i)
+            num_params += 1
+
+        # Entangling block
+        for i in range(number_of_qubits_financial):
+            qml.CZ(wires=[i, (i+1)%number_of_qubits_financial])
+    return qml.probs(wires=range(number_of_qubits_financial))
+
+weights_financial = {"params": number_of_qubits_financial * number_of_reps_financial}
+
 class Generator(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, use_financial=False) -> None:
         super().__init__()
-        self.q_gen = qml.qnn.TorchLayer(quantum_generator, weights)
+        self.use_financial = use_financial
+        if self.use_financial:
+            self.q_gen = qml.qnn.TorchLayer(quantum_generator_financial, weights_financial)
+        else:
+            self.q_gen = qml.qnn.TorchLayer(quantum_generator, weights)
 
     def forward(self, x):
         """
@@ -121,27 +155,30 @@ class Generator(nn.Module):
         Returns:
         - torch.Tensor: The output of the Generator.
         """
-        out = (4/np.pi)*torch.arcsin(torch.sqrt(self.q_gen(x)))-1/2
-        return out[:, [0, 2]]
+        if self.use_financial: # use fin anstatz
+            return self.q_gen(x)
+        else:
+            out = (4/np.pi) * torch.arcsin(torch.sqrt(self.q_gen(x))) - 1/2
+            return out[:, [0, 2]]
 
-    def fit_generator(self, net_D, batch_size, input_size, criterion, optimizer, code_dim, beta):  
+    def fit_generator(self, net_D, batch_size, input_size, criterion, optimizer):  
         """
         Trains the Generator module.
 
         Args:
         - net_D: The Discriminator network.
-        - T: The T network.
         - batch_size (int): The size of the batch.
         - input_size (int): The size of the input data.
         - criterion: The loss criterion.
         - optimizer: The optimizer.
-        - code_dim (int): The dimension of the code.
-        - beta (float): The beta value.
 
         Returns:
         - float: The loss value.
         """
-        x_rand = 2*torch.rand((batch_size, input_size))-1
+        if self.use_financial:
+            x_rand = torch.rand((batch_size, input_size))
+        else:
+            x_rand = 2*torch.rand((batch_size, input_size))-1
         self.zero_grad()
         
         # Generate outputs With Generator and check if they fool Discriminator

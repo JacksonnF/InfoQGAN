@@ -5,13 +5,14 @@ from  pennylane import numpy as np
 
 
 class Discriminator(nn.Module):
-    def __init__(self, input_size, hid_size) -> None:
+    def __init__(self, input_size, hid_size, use_financial=False) -> None:
         """
         Args:
         - input_size (int): The size of the input data.
         - hid_size (int): The size of the hidden layers.
         """
         super().__init__()
+        self.use_financial = use_financial
         self.layers = nn.Sequential(
             nn.Linear(input_size, hid_size),
             nn.ReLU(),
@@ -49,18 +50,21 @@ class Discriminator(nn.Module):
 
         """
         batch_size, _ = x_data.shape[0], x_data.shape[1]
-        x_rand = 2*torch.rand((batch_size, input_size))-1
+        if self.use_financial:
+            x_rand = torch.rand((batch_size, input_size))
+        else:
+            x_rand = 2*torch.rand((batch_size, input_size))-1
 
         self.zero_grad()
 
         # Forward pass Discriminator on "real" data
-        labels_real = torch.ones((batch_size, 1)) * 0.9
+        labels_real = torch.ones((batch_size, 1)) * 0.9 # Label smoothing
         outputs = self.forward(x_data)
         loss_d_real = criterion(outputs, labels_real)
 
         # Forward pass Discriminator with "fake" data from Generator
         g = net_G(x_rand).detach() # Stop gradients from being updated in generator
-        labels_fk = torch.zeros((batch_size, 1)) + 0.1
+        labels_fk = torch.zeros((batch_size, 1)) + 0.1 # Label smoothing
         outputs = self.forward(g)
         loss_d_fake = criterion(outputs, labels_fk)
 
@@ -73,7 +77,6 @@ number_of_qubits = 5
 number_of_reps = 5
 
 dev = qml.device('default.qubit', wires=number_of_qubits)
-
 @qml.qnode(dev)
 def quantum_generator(inputs, params):
     """
@@ -89,7 +92,7 @@ def quantum_generator(inputs, params):
     qml.AngleEmbedding(np.pi*inputs/2, rotation="Y", wires=range(number_of_qubits))
     num_params = 0
     for layer in range(number_of_reps):
-        #initial RX,Ry,RZ gates.
+        # Initial RX, Ry, RZ gates
         for i in range(number_of_qubits):
             qml.RX(params[num_params], wires=i)
             qml.RY(params[num_params+1], wires=i)
@@ -103,10 +106,44 @@ def quantum_generator(inputs, params):
 
 weights = {"params": 3 * number_of_qubits * number_of_reps}
 
+number_of_qubits_financial = 4
+number_of_reps_financial = 5
+
+dev_fin = qml.device('default.qubit', wires=number_of_qubits_financial)
+@qml.qnode(dev_fin)
+def quantum_generator_financial(inputs, params):
+    """
+    Defines the quantum generator circuit. Embedding and Ansatz layers were based on the paper we followed.
+
+    Args:
+    - inputs (torch.Tensor): The input data.
+    - params (torch.Tensor): The parameters of the circuit.
+
+    Returns:
+    - tuple: The probabilities of the qubits.
+    """
+    qml.AngleEmbedding(np.pi*(inputs-0.5)/2, rotation="Y", wires=range(number_of_qubits_financial))
+    num_params = 0
+    for layer in range(number_of_reps_financial):
+        #initial Ry gates.
+        for i in range(number_of_qubits_financial):
+            qml.RY(params[num_params], wires=i)
+            num_params += 1
+
+        # Entangling block
+        for i in range(number_of_qubits_financial):
+            qml.CZ(wires=[i, (i+1)%number_of_qubits_financial])
+    return qml.probs(wires=range(number_of_qubits_financial))
+
 class Generator(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, use_financial=False) -> None:
         super().__init__()
-        self.q_gen = qml.qnn.TorchLayer(quantum_generator, weights)
+        self.use_financial = use_financial
+        if self.use_financial:
+            weights_financial = {"params": 20}
+            self.q_gen = qml.qnn.TorchLayer(quantum_generator_financial, weights_financial)
+        else:
+            self.q_gen = qml.qnn.TorchLayer(quantum_generator, weights)
 
     def forward(self, x):
         """
@@ -118,8 +155,11 @@ class Generator(nn.Module):
         Returns:
         - torch.Tensor: The output of the Generator.
         """
-        out = (4/np.pi)*torch.arcsin(torch.sqrt(self.q_gen(x)))-1/2
-        return out[:, [0, 2]]
+        if self.use_financial:
+            return self.q_gen(x)
+        else:
+            out = (4/np.pi) * torch.arcsin(torch.sqrt(self.q_gen(x))) - 1/2
+            return out[:, [0, 2]]
 
     def fit_generator(self, net_D, T, batch_size, input_size, criterion, optimizer, code_dim, beta):  
         """
@@ -138,7 +178,10 @@ class Generator(nn.Module):
         Returns:
         - float: The loss value.
         """
-        x_rand = 2*torch.rand((batch_size, input_size))-1
+        if self.use_financial:
+            x_rand = torch.rand((batch_size, input_size))
+        else:
+            x_rand = 2*torch.rand((batch_size, input_size))-1
         self.zero_grad()
         
         # Generate outputs With Generator and check if they fool Discriminator
@@ -150,7 +193,6 @@ class Generator(nn.Module):
 
         # Compute the MINE loss term: -(E_pxy[T(x,y)] - log(E_pxpy[e^T(x,y)]))
         # Note: term 1 uses joint pdf, term 2 uses marginal pdfs
-
         x_marg = x_rand[torch.randperm(x_rand.size(0)), 0:code_dim]
         mine = torch.mean(T(g, x_rand[:, 0:code_dim])) - torch.log(torch.mean(torch.exp(T(g, x_marg)))) 
         loss_g += -mine * beta
@@ -161,18 +203,19 @@ class Generator(nn.Module):
         return loss_g.item()
 
 class T(nn.Module):
-    def __init__(self, noise_dim, code_dim, hid_size) -> None:
+    def __init__(self, gen_out_dim, code_dim, hid_size, use_financial=False) -> None:
         """
         Initializes the T module.
 
         Args:
-        - noise_dim (int): The dimension of the noise.
+        - gen_out_dim (int): The dimension of the generator output.
         - code_dim (int): The dimension of the code.
         - hid_size (int): The size of the hidden layers.
         """
         super().__init__()
+        self.use_financial = use_financial
         self.layers = nn.Sequential(
-            nn.Linear(code_dim + noise_dim, hid_size),
+            nn.Linear(code_dim + gen_out_dim, hid_size),
             nn.ReLU(),
             nn.Linear(hid_size, hid_size),
             nn.ReLU(),
@@ -207,7 +250,10 @@ class T(nn.Module):
         Returns:
         - float: The loss value.
         """
-        x_rand = 2*torch.rand((batch_size, input_size))-1
+        if self.use_financial:
+            x_rand = torch.rand((batch_size, input_size))
+        else:
+            x_rand = 2*torch.rand((batch_size, input_size))-1
         self.zero_grad()
 
         # Compute loss following similar logic to MINE term in generator loss
