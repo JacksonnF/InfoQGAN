@@ -2,6 +2,8 @@
 In this project we recreated the research done by Lee et al 2023 (https://arxiv.org/pdf/2309.01363.pdf)
 Our main task was to demonstrate a working InfoQGAN. To do this we started by creating a GAN followed by developing a MINE network and later applying these to a quantum generator producing our final InfoQGAN. The working of these models is demonstrated by modelling 3 datasets: a central square, and offset circle and two financial assets to promote the application of an InfoQGAN to MPT. 
 
+The main findings are summarized in the `Final report.pdf`. The final report reviews the key mathematical equations behind an InfoQGAN, alongside a discussion of the paper, their results in contrast to our results and an opinion and interpration of the latter. 
+
 `./QGAN.ipynb` and `./InfoQGAN.ipynb` are the two key files that create a working version of their respective models. 
 
 ## Repo Structure
