@@ -3,6 +3,15 @@ import torch.nn as nn
 import pennylane as qml
 from pennylane import numpy as np
 
+from .quantum_generator import (
+    quantum_generator,
+    quantum_generator_financial,
+    number_of_qubits,
+    number_of_qubits_financial,
+    number_of_reps,
+    number_of_reps_financial,
+)
+
 
 class Discriminator(nn.Module):
     def __init__(self, input_size, hid_size, use_financial=False) -> None:
@@ -53,7 +62,7 @@ class Discriminator(nn.Module):
         if self.use_financial:
             x_rand = torch.rand((batch_size, input_size))
         else:
-            x_rand = 2*torch.rand((batch_size, input_size))-1
+            x_rand = 2 * torch.rand((batch_size, input_size)) - 1
 
         self.zero_grad()
 
@@ -63,86 +72,30 @@ class Discriminator(nn.Module):
         loss_d_real = criterion(outputs, labels_real)
 
         # Forward pass Discriminator with "fake" data from Generator
-        g = net_G(x_rand).detach() # Stop gradients from being updated in generator
+        g = net_G(x_rand).detach()  # Stop gradients from being updated in generator
         labels_fk = torch.zeros((batch_size, 1)) + 0.1
         outputs = self.forward(g)
         loss_d_fake = criterion(outputs, labels_fk)
 
         loss_d = loss_d_fake + loss_d_real
-        loss_d.backward() # Compute Gradients
-        optimizer.step() # Update Weights
+        loss_d.backward()  # Compute Gradients
+        optimizer.step()  # Update Weights
         return loss_d.item()
-    
-number_of_qubits = 5
-number_of_reps = 5
-dev = qml.device('default.qubit', wires=number_of_qubits)
-@qml.qnode(dev)
-def quantum_generator(inputs, params):
-    """
-    Defines the quantum generator circuit. Embedding and Ansatz layers were based on the paper we followed.
 
-    Args:
-    - inputs (torch.Tensor): The input data.
-    - params (torch.Tensor): The parameters of the circuit.
-
-    Returns:
-    - tuple: The probabilities of the qubits.
-    """
-    qml.AngleEmbedding(np.pi*inputs/2, rotation="Y", wires=range(number_of_qubits))
-    num_params = 0
-    for layer in range(number_of_reps):
-        #initial RX,Ry,RZ gates.
-        for i in range(number_of_qubits):
-            qml.RX(params[num_params], wires=i)
-            qml.RY(params[num_params+1], wires=i)
-            qml.RZ(params[num_params+2], wires=i)
-            num_params += 3
-
-        # Entangling block
-        for i in range(number_of_qubits):
-            qml.CNOT(wires=[i, (i+1)%number_of_qubits])
-    return qml.probs(wires=0), qml.probs(wires=1)
-
-weights = {"params": 3 * number_of_qubits * number_of_reps}
-
-number_of_qubits_financial = 4
-number_of_reps_financial = 5
-
-dev_fin = qml.device('default.qubit', wires=number_of_qubits_financial)
-@qml.qnode(dev_fin)
-def quantum_generator_financial(inputs, params):
-    """
-    Defines the quantum generator circuit. Embedding and Ansatz layers were based on the paper we followed.
-
-    Args:
-    - inputs (torch.Tensor): The input data.
-    - params (torch.Tensor): The parameters of the circuit.
-
-    Returns:
-    - tuple: The probabilities of the qubits.
-    """
-    qml.AngleEmbedding(np.pi*(inputs-0.5)/2, rotation="Y", wires=range(number_of_qubits))
-    num_params = 0
-    for layer in range(number_of_reps_financial):
-        #initial Ry gates.
-        for i in range(number_of_qubits_financial):
-            qml.RY(params[num_params], wires=i)
-            num_params += 1
-
-        # Entangling block
-        for i in range(number_of_qubits_financial):
-            qml.CZ(wires=[i, (i+1)%number_of_qubits_financial])
-    return qml.probs(wires=range(number_of_qubits_financial))
-
-weights_financial = {"params": number_of_qubits_financial * number_of_reps_financial}
 
 class Generator(nn.Module):
     def __init__(self, use_financial=False) -> None:
         super().__init__()
         self.use_financial = use_financial
         if self.use_financial:
-            self.q_gen = qml.qnn.TorchLayer(quantum_generator_financial, weights_financial)
+            weights_financial = {
+                "params": number_of_qubits_financial * number_of_reps_financial
+            }
+            self.q_gen = qml.qnn.TorchLayer(
+                quantum_generator_financial, weights_financial
+            )
         else:
+            weights = {"params": 3 * number_of_qubits * number_of_reps}
             self.q_gen = qml.qnn.TorchLayer(quantum_generator, weights)
 
     def forward(self, x):
@@ -155,13 +108,13 @@ class Generator(nn.Module):
         Returns:
         - torch.Tensor: The output of the Generator.
         """
-        if self.use_financial: # use fin anstatz
+        if self.use_financial:  # use fin anstatz
             return self.q_gen(x)
         else:
-            out = (4/np.pi) * torch.arcsin(torch.sqrt(self.q_gen(x))) - 1/2
+            out = (4 / np.pi) * torch.arcsin(torch.sqrt(self.q_gen(x))) - 1 / 2
             return out[:, [0, 2]]
 
-    def fit_generator(self, net_D, batch_size, input_size, criterion, optimizer):  
+    def fit_generator(self, net_D, batch_size, input_size, criterion, optimizer):
         """
         Trains the Generator module.
 
@@ -178,16 +131,18 @@ class Generator(nn.Module):
         if self.use_financial:
             x_rand = torch.rand((batch_size, input_size))
         else:
-            x_rand = 2*torch.rand((batch_size, input_size))-1
+            x_rand = 2 * torch.rand((batch_size, input_size)) - 1
         self.zero_grad()
-        
+
         # Generate outputs With Generator and check if they fool Discriminator
         labels_real = torch.ones((batch_size, 1)) * 0.9
         g = self.forward(x_rand)
         outputs = net_D(g)
 
-        loss_g = criterion(outputs, labels_real) # We want "fake" Generator output to look real  
+        loss_g = criterion(
+            outputs, labels_real
+        )  # We want "fake" Generator output to look real
         loss_g.backward()
         optimizer.step()
-        
+
         return loss_g.item()
